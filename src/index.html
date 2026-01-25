@@ -33,14 +33,7 @@
 </head>
 <body>
 	<div id="app"></div>
-	<div id="tauri-download-panel" class="tauri-download-panel">
-		<div class="tauri-download-title">Download Audio</div>
-		<div class="tauri-download-row">
-			<input id="tauri-download-url" type="url" placeholder="Paste YouTube URL..." autocomplete="off" spellcheck="false">
-			<button id="tauri-download-btn" type="button">Download</button>
-		</div>
-		<pre id="tauri-download-status" class="tauri-download-status"></pre>
-	</div>
+	<div id="tauri-download-mount"></div>
 
 	<script src="dist/wavesurfer.js"></script>
 	<script src="dist/plugin/wavesurfer.regions.js"></script>
@@ -76,6 +69,6 @@
 			} catch ( error ) {}
 		}
 	</script>
-	<script src="tauri-download.js"></script>
+	<script src="download-ui.js"></script>
 </body>
 </html>
