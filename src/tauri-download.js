@@ -31,22 +31,22 @@
     overlay.classList.remove('is-visible');
   };
 
-  const setStatus = (state) => {
+  const setStatus = (state, message) => {
     if (!statusEl || !statusText) return;
     statusEl.classList.remove('is-success', 'is-error');
     panel.classList.remove('is-downloading');
     if (state === 'downloading') {
       panel.classList.add('is-downloading');
-      statusText.textContent = 'Downloading';
+      statusText.textContent = message || 'Downloading';
       return;
     }
     if (state === 'success') {
       statusEl.classList.add('is-success');
-      statusText.textContent = 'Ready: File imported.';
+      statusText.textContent = message || 'Ready: File imported.';
       return;
     }
     statusEl.classList.add('is-error');
-    statusText.textContent = 'Download failed. See logs.';
+    statusText.textContent = message || 'Download failed. See logs.';
   };
 
   const formatDateFolder = () => {
@@ -147,6 +147,8 @@
       let downloadPath = '';
       let binariesDir = '';
       let chosenYtDlpPath = '';
+      const suppressWarnings = window.localStorage
+        && window.localStorage.getItem('aw_ytdlp_no_warnings') === '1';
 
       try {
         downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
@@ -167,6 +169,9 @@
           '--print', 'after_move:filepath',
           url
         ];
+        if (suppressWarnings) {
+          args.splice(1, 0, '--no-warnings');
+        }
 
         logLines.push('[diag] using Command.sidecar name=binaries/yt-dlp');
         const command = Command.sidecar('binaries/yt-dlp', args);
@@ -192,6 +197,16 @@
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
           logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
+          let resolvedPath = downloadPath;
+          if (code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
+            try {
+              resolvedPath = await invoke('find_latest_download', { downloadDir });
+              logLines.push(`[diag] resolved_download=${resolvedPath}`);
+            } catch (resolveErr) {
+              logLines.push(`[diag] resolve_download_error=${String(resolveErr || '')}`);
+            }
+          }
+
           const logText = logLines.join('\n') + (spawnError ? `\n${spawnError}` : '');
 
           if (logPath) {
@@ -200,16 +215,18 @@
             } catch (_) {}
           }
 
-          const isM4a = downloadPath && downloadPath.toLowerCase().endsWith('.m4a');
+          const isM4a = resolvedPath && resolvedPath.toLowerCase().endsWith('.m4a');
 
           if (code === 0 && isM4a) {
             try {
-              const bytes = await invoke('read_downloaded_file', { path: downloadPath });
+              const bytes = await invoke('read_downloaded_file', { path: resolvedPath });
               const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' });
               if (window.PKAudioEditor && window.PKAudioEditor.engine) {
                 window.PKAudioEditor.engine.LoadArrayBuffer(blob);
               }
-              setStatus('success');
+              const sizeMb = bytes && bytes.length ? (bytes.length / (1024 * 1024)) : 0;
+              const sizeText = sizeMb ? ` (${sizeMb.toFixed(1)} MB)` : '';
+              setStatus('success', `Ready: File imported.${sizeText}`);
             } catch (_) {
               setStatus('error');
             }

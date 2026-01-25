@@ -342,6 +342,12 @@
       return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
     }
 
+    _formatSize(bytes) {
+      if (!bytes || !bytes.length) return '';
+      const sizeMb = bytes.length / (1024 * 1024);
+      return ` (${sizeMb.toFixed(1)} MB)`;
+    }
+
     _looksLikeUrl(value) {
       return /^https?:\/\/.+/i.test(value || '');
     }
@@ -372,6 +378,8 @@
       let downloadPath = '';
       let binariesDir = '';
       let chosenYtDlpPath = '';
+      const suppressWarnings = window.localStorage
+        && window.localStorage.getItem('aw_ytdlp_no_warnings') === '1';
 
       try {
         downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
@@ -392,6 +400,9 @@
           '--print', 'after_move:filepath',
           url
         ];
+        if (suppressWarnings) {
+          args.splice(1, 0, '--no-warnings');
+        }
 
         let command = null;
         logLines.push('[diag] using Command.sidecar name=binaries/yt-dlp');
@@ -418,6 +429,16 @@
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
           logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
+          let resolvedPath = downloadPath;
+          if (code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
+            try {
+              resolvedPath = await invoke('find_latest_download', { downloadDir });
+              logLines.push(`[diag] resolved_download=${resolvedPath}`);
+            } catch (resolveErr) {
+              logLines.push(`[diag] resolve_download_error=${String(resolveErr || '')}`);
+            }
+          }
+
           const logText = logLines.join('\n') + (spawnError ? `\n${spawnError}` : '');
 
           if (logPath) {
@@ -426,32 +447,33 @@
             } catch (_) {}
           }
 
-          const isM4a = downloadPath && downloadPath.toLowerCase().endsWith('.m4a');
+          const isM4a = resolvedPath && resolvedPath.toLowerCase().endsWith('.m4a');
 
           if (code === 0 && isM4a) {
             try {
               // Persist the resolved download path for user visibility/support.
-              if (downloadPath) {
+              if (resolvedPath) {
                 try {
                   const metaPath = `${downloadDir}\\last_download.txt`;
                   await invoke('write_meta_file', {
                     path: metaPath,
-                    contents: downloadPath
+                    contents: resolvedPath
                   });
                   logLines.push(`[diag] last_download_meta=${metaPath}`);
                 } catch (metaErr) {
                   logLines.push(`[diag] last_download_meta_error=${String(metaErr || '')}`);
                 }
               }
-              const bytes = await invoke('read_downloaded_file', { path: downloadPath });
+              const bytes = await invoke('read_downloaded_file', { path: resolvedPath });
               const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' });
               if (window.PKAudioEditor && window.PKAudioEditor.engine) {
                 window.PKAudioEditor.engine.LoadArrayBuffer(blob);
               }
-              const shortPath = downloadPath
-                ? downloadPath.split('\\').slice(-2).join('\\')
+              const shortPath = resolvedPath
+                ? resolvedPath.split('\\').slice(-2).join('\\')
                 : 'File imported';
-              this.setStatus('success', `Ready: ${shortPath}`);
+              const sizeText = this._formatSize(bytes);
+              this.setStatus('success', `Ready: ${shortPath}${sizeText}`);
             } catch (_) {
               this.setStatus('error');
             }
