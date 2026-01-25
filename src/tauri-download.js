@@ -18,6 +18,10 @@
   const invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
   const shell = tauri && (tauri.shell || (tauri.plugin && tauri.plugin.shell));
   const Command = shell && shell.Command;
+  const ytDlpCandidates = (binariesDir) => ([
+    `${binariesDir}\\yt-dlp-x86_64-pc-windows-msvc.exe`,
+    `${binariesDir}\\yt-dlp.exe`
+  ]);
 
   const showOverlay = () => {
     overlay.classList.add('is-visible');
@@ -141,12 +145,15 @@
       const logLines = [];
       let spawnError = '';
       let downloadPath = '';
+      let binariesDir = '';
+      let chosenYtDlpPath = '';
 
       try {
         downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
         logPath = `${downloadDir}\\download_${logStamp}.log`;
 
-        const binariesDir = await invoke('get_binaries_dir');
+        binariesDir = await invoke('get_binaries_dir');
+        logLines.push(`[diag] binariesDir=${binariesDir}`);
         const outputTemplate = `${downloadDir}\\%(uploader)s__%(title)s__%(id)s.%(ext)s`;
         const args = [
           '--ignore-config',
@@ -161,7 +168,9 @@
           url
         ];
 
+        logLines.push('[diag] using Command.sidecar name=binaries/yt-dlp');
         const command = Command.sidecar('binaries/yt-dlp', args);
+        chosenYtDlpPath = 'sidecar:binaries/yt-dlp';
 
         command.stdout.on('data', (line) => {
           if (line) logLines.push(line.toString());
@@ -177,10 +186,12 @@
 
         command.on('error', (error) => {
           spawnError = error && error.toString ? error.toString() : String(error || '');
+          logLines.push(`[diag] command.on_error path=${chosenYtDlpPath} err=${spawnError}`);
         });
 
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
+          logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
           const logText = logLines.join('\n') + (spawnError ? `\n${spawnError}` : '');
 
           if (logPath) {
@@ -211,10 +222,13 @@
         });
 
         await command.spawn();
+        logLines.push(`[diag] spawn_called path=${chosenYtDlpPath}`);
       } catch (error) {
         if (logPath) {
           try {
-            await invoke('write_download_log', { path: logPath, contents: String(error || '') });
+            const errText = String(error || '');
+            const diagText = logLines.length ? `\n${logLines.join('\n')}` : '';
+            await invoke('write_download_log', { path: logPath, contents: `${errText}${diagText}` });
           } catch (_) {}
         }
         setStatus('error');

@@ -225,7 +225,7 @@
 			}
 		};
 
-		this.DownloadFile = function ( name, format, kbps, selection, stereo ) {
+		this.DownloadFile = function ( name, format, kbps, selection, stereo, options ) {
 			if (!q.is_ready) return ;
 
 			app.fireEvent ('WillDownloadFile');
@@ -239,15 +239,52 @@
 				app.stopListeningForName ('RequestCancelModal');
 			});
 
+			var tauri = window.__TAURI__;
+			var invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
+			var outputRoot = options && typeof options.outputRoot === 'string' ? options.outputRoot.trim() : '';
+			var onComplete = options && typeof options.onComplete === 'function' ? options.onComplete : null;
+			var onError = options && typeof options.onError === 'function' ? options.onError : null;
+
 			setTimeout(function() {
 				AudioUtils.DownloadFile ( name, format, kbps, selection, stereo, function ( val ) {
-					if (val === 'done')
-					{
+					if (typeof val === 'number') {
+						app.fireEvent ('DidProgressModal', val);
+						return false;
+					}
+
+					if (val && val.kind === 'result' && invoke) {
+						(async function () {
+							try {
+								var blob = val.blob;
+								var arr = await blob.arrayBuffer();
+								var bytes = Array.from(new Uint8Array(arr));
+								var outputPath = await invoke('export_audio_file', {
+									fileName: val.fileName || name || ('output.' + format),
+									format: val.format || format,
+									bytes: bytes,
+									outputRoot: outputRoot || null
+								});
+								setTimeout(function() { app.fireEvent ('DidDownloadFile'); }, 12);
+								app.stopListeningForName ('RequestCancelModal');
+								onComplete && onComplete(outputPath);
+							} catch (err) {
+								setTimeout(function() { app.fireEvent ('DidDownloadFile'); }, 12);
+								app.stopListeningForName ('RequestCancelModal');
+								onError && onError(err && err.toString ? err.toString() : String(err || 'Export failed'));
+							}
+						})();
+						return true;
+					}
+
+					if (val === 'done') {
 						setTimeout(function() { app.fireEvent ('DidDownloadFile'); }, 12);
 						app.stopListeningForName ('RequestCancelModal');
+						onComplete && onComplete('');
+						return false;
 					}
-					else
-						app.fireEvent ('DidProgressModal', val);
+
+					app.fireEvent ('DidProgressModal', val);
+					return false;
 				});
 			}, 220);
 		}

@@ -143,6 +143,7 @@
     display: flex;
     gap: 6px;
     margin-top: 6px;
+    flex-wrap: wrap;
   }
   .row:first-of-type {
     margin-top: 0;
@@ -162,9 +163,10 @@
     color: #eee;
     border: 1px solid #555;
     border-radius: 6px;
-    padding: 4px 10px;
+    padding: 4px 8px;
     cursor: pointer;
     font-size: 12px;
+    white-space: nowrap;
   }
   button.action:hover {
     background: #3a3a3a;
@@ -270,6 +272,12 @@
       const Command = shell && shell.Command;
       return { tauri, invoke, dialog, Command };
     }
+    _ytDlpCandidates(binariesDir) {
+      return [
+        `${binariesDir}\\yt-dlp-x86_64-pc-windows-msvc.exe`,
+        `${binariesDir}\\yt-dlp.exe`
+      ];
+    }
 
     async _initRoot() {
       const { invoke } = this._getTauri();
@@ -362,12 +370,15 @@
       const logLines = [];
       let spawnError = '';
       let downloadPath = '';
+      let binariesDir = '';
+      let chosenYtDlpPath = '';
 
       try {
         downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
         logPath = `${downloadDir}\\download_${logStamp}.log`;
 
-        const binariesDir = await invoke('get_binaries_dir');
+        binariesDir = await invoke('get_binaries_dir');
+        logLines.push(`[diag] binariesDir=${binariesDir}`);
         const outputTemplate = `${downloadDir}\\%(uploader)s__%(title)s__%(id)s.%(ext)s`;
         const args = [
           '--ignore-config',
@@ -382,7 +393,10 @@
           url
         ];
 
-        const command = Command.sidecar('binaries/yt-dlp', args);
+        let command = null;
+        logLines.push('[diag] using Command.sidecar name=binaries/yt-dlp');
+        command = Command.sidecar('binaries/yt-dlp', args);
+        chosenYtDlpPath = 'sidecar:binaries/yt-dlp';
 
         command.stdout.on('data', (line) => {
           if (line) logLines.push(line.toString());
@@ -398,10 +412,12 @@
 
         command.on('error', (error) => {
           spawnError = error && error.toString ? error.toString() : String(error || '');
+          logLines.push(`[diag] command.on_error path=${chosenYtDlpPath} err=${spawnError}`);
         });
 
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
+          logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
           const logText = logLines.join('\n') + (spawnError ? `\n${spawnError}` : '');
 
           if (logPath) {
@@ -414,12 +430,28 @@
 
           if (code === 0 && isM4a) {
             try {
+              // Persist the resolved download path for user visibility/support.
+              if (downloadPath) {
+                try {
+                  const metaPath = `${downloadDir}\\last_download.txt`;
+                  await invoke('write_meta_file', {
+                    path: metaPath,
+                    contents: downloadPath
+                  });
+                  logLines.push(`[diag] last_download_meta=${metaPath}`);
+                } catch (metaErr) {
+                  logLines.push(`[diag] last_download_meta_error=${String(metaErr || '')}`);
+                }
+              }
               const bytes = await invoke('read_downloaded_file', { path: downloadPath });
               const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' });
               if (window.PKAudioEditor && window.PKAudioEditor.engine) {
                 window.PKAudioEditor.engine.LoadArrayBuffer(blob);
               }
-              this.setStatus('success');
+              const shortPath = downloadPath
+                ? downloadPath.split('\\').slice(-2).join('\\')
+                : 'File imported';
+              this.setStatus('success', `Ready: ${shortPath}`);
             } catch (_) {
               this.setStatus('error');
             }
@@ -432,10 +464,13 @@
         });
 
         await command.spawn();
+        logLines.push(`[diag] spawn_called path=${chosenYtDlpPath}`);
       } catch (error) {
         if (logPath) {
           try {
-            await invoke('write_download_log', { path: logPath, contents: String(error || '') });
+            const errText = String(error || '');
+            const diagText = logLines.length ? `\n${logLines.join('\n')}` : '';
+            await invoke('write_download_log', { path: logPath, contents: `${errText}${diagText}` });
           } catch (_) {}
         }
         this.setStatus('error');

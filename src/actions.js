@@ -894,7 +894,22 @@
 					callback && callback ( ev.data.percentage );
 					return ;
 				}
-				forceDownload( ev.data );
+				var handled = false;
+				if (callback) {
+					try {
+						var result = callback({
+							kind: 'result',
+							blob: ev.data,
+							format: format,
+							fileName: with_name ? with_name : ('output.' + format)
+						});
+						handled = result === true;
+					} catch (_) {}
+				}
+				if (!handled) {
+					forceDownload( ev.data );
+					callback && callback ('done');
+				}
 
 				worker.terminate ();
 				worker = null;

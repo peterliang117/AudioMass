@@ -188,9 +188,38 @@
 												kbps = document.getElementById('flac-comp').value / 1;
 											}
 
-											app.engine.DownloadFile ( value, format, kbps, export_sel, stereo );
-											q.Destroy ();
-											// -
+											var exportRootInput = q.el_body.querySelector('#aw_audio_export_root');
+											var statusEl = q.el_body.querySelector('#aw_audio_export_status');
+											var exportBtn = q.el && q.el.querySelector('a.pk_modal_a_accpt');
+											var outputRoot = exportRootInput ? exportRootInput.value.trim() : '';
+
+											function shortPath(p) {
+												if (!p) return '';
+												return p.split('\\').slice(-3).join('\\');
+											}
+											function setStatus(text) {
+												if (statusEl) statusEl.textContent = text || '';
+											}
+
+											if (exportBtn) exportBtn.classList.add('pk_inact');
+											setStatus('Exporting...');
+
+											app.engine.DownloadFile ( value, format, kbps, export_sel, stereo, {
+												outputRoot: outputRoot || null,
+												onComplete: function (outputPath) {
+													if (exportBtn) exportBtn.classList.remove('pk_inact');
+													if (outputPath) {
+														setStatus('Saved: ' + shortPath(outputPath));
+													} else {
+														setStatus('Exported via browser download.');
+													}
+												},
+												onError: function (message) {
+													if (exportBtn) exportBtn.classList.remove('pk_inact');
+													setStatus('Export failed. See logs.');
+												}
+											});
+											// keep modal open so the user can see the save path
 										}
 									}
 								  ],
@@ -229,9 +258,29 @@
 									'<input type="radio" class="pk_check" id="k4" name="xport" checked value="whole">'+
 									'<label for="k4">Export whole file</label>'+
 									'<input type="radio" class="pk_check" id="k5" name="xport" value="sel">'+
-									'<label class="pk_lblmp3" for="k5">Export Selection Only</label></div>',
+									'<label class="pk_lblmp3" for="k5">Export Selection Only</label></div>'+
+
+									'<div class="pk_row" style="display:flex;align-items:center;gap:6px;margin-top:8px">' +
+									'<label style="min-width:80px">Save Folder</label>' +
+									'<input id="aw_audio_export_root" class="pk_txt" type="text" style="flex:1;min-width:0" placeholder="Exports folder" />' +
+									'<button id="aw_audio_export_browse" class="pk_modal_a" style="white-space:nowrap;min-height:26px;line-height:26px;padding:0 12px" type="button">Browse</button>' +
+									'<button id="aw_audio_export_set" class="pk_modal_a" style="white-space:nowrap;min-height:26px;line-height:26px;padding:0 12px" type="button">Set</button>' +
+									'</div>' +
+									'<div class="pk_row" style="padding-top:2px"><span id="aw_audio_export_status" style="opacity:0.85"></span></div>',
 									
 								  setup:function( q ) {
+								  		var tauri = window.__TAURI__;
+								  		var invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
+								  		var dialog = tauri && (tauri.dialog || (tauri.plugin && tauri.plugin.dialog));
+								  		var exportRootInput = q.el_body.querySelector('#aw_audio_export_root');
+								  		var exportBrowseBtn = q.el_body.querySelector('#aw_audio_export_browse');
+								  		var exportSetBtn = q.el_body.querySelector('#aw_audio_export_set');
+								  		var statusEl = q.el_body.querySelector('#aw_audio_export_status');
+
+								  		function setStatus(text) {
+								  			if (statusEl) statusEl.textContent = text || '';
+								  		}
+
 								  		var wv = PKAudioEditor.engine.wavesurfer;
 								  		//console.log( document.getElementById('frmtex') );
 
@@ -252,6 +301,48 @@
 										app.ui.KeyHandler.addCallback ('modalTemp', function ( e ) {
 											q.Destroy ();
 										}, [27]);
+
+										if (invoke && exportRootInput) {
+											invoke('get_export_root').then(function (root) {
+												exportRootInput.value = root || '';
+												setStatus(root ? ('Save to: ' + root) : '');
+											}).catch(function () {
+												setStatus('Unable to read export folder.');
+											});
+										}
+
+										if (exportBrowseBtn) {
+											exportBrowseBtn.addEventListener('click', function () {
+												if (!dialog || !dialog.open) {
+													setStatus('Folder picker unavailable.');
+													return;
+												}
+												dialog.open({ directory: true, multiple: false }).then(function (result) {
+													if (typeof result === 'string' && exportRootInput) {
+														exportRootInput.value = result;
+														setStatus('Save to: ' + result);
+													}
+												}).catch(function () {
+													setStatus('Folder picker failed.');
+												});
+											});
+										}
+
+										if (exportSetBtn && exportRootInput) {
+											exportSetBtn.addEventListener('click', function () {
+												if (!invoke) {
+													setStatus('Tauri unavailable.');
+													return;
+												}
+												var value = exportRootInput.value.trim();
+												invoke('set_export_root', { path: value }).then(function (root) {
+													exportRootInput.value = root || '';
+													setStatus(root ? ('Save to: ' + root) : '');
+												}).catch(function () {
+													setStatus('Unable to set export folder.');
+												});
+											});
+										}
 
 										setTimeout(function() {
 											if (!q.el) return ;
