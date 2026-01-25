@@ -31,6 +31,7 @@
         urlInput: this._shadow.getElementById('url-input'),
         rootInput: this._shadow.getElementById('root-input'),
         rootSave: this._shadow.getElementById('root-save'),
+        rootBrowse: this._shadow.getElementById('root-browse'),
         statusText: this._shadow.getElementById('status-text'),
         spinner: this._shadow.getElementById('spinner')
       };
@@ -222,6 +223,7 @@
     </div>
     <div class="row">
       <input id="root-input" type="text" placeholder="Download/Export folder path" autocomplete="off" spellcheck="false" />
+      <button id="root-browse" class="action" type="button">Browse</button>
       <button id="root-save" class="action" type="button">Set</button>
     </div>
     <div id="status">
@@ -239,7 +241,8 @@
         openBtn,
         minimizeBtn,
         downloadBtn,
-        rootSave
+        rootSave,
+        rootBrowse
       } = this._elements;
 
       if (openBtn) {
@@ -254,14 +257,18 @@
       if (rootSave) {
         rootSave.addEventListener('click', () => this._saveRoot());
       }
+      if (rootBrowse) {
+        rootBrowse.addEventListener('click', () => this._browseRoot());
+      }
     }
 
     _getTauri() {
       const tauri = window.__TAURI__;
       const invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
       const shell = tauri && (tauri.shell || (tauri.plugin && tauri.plugin.shell));
+      const dialog = tauri && (tauri.dialog || (tauri.plugin && tauri.plugin.dialog));
       const Command = shell && shell.Command;
-      return { tauri, invoke, Command };
+      return { tauri, invoke, dialog, Command };
     }
 
     async _initRoot() {
@@ -285,9 +292,26 @@
       try {
         const updated = await invoke('set_download_root', { path: value });
         this._elements.rootInput.value = updated;
-        this.setStatus('success');
+        this.setStatus('success', 'Download folder set.');
       } catch (_) {
         this.setStatus('error');
+      }
+    }
+
+    async _browseRoot() {
+      const { dialog } = this._getTauri();
+      if (!dialog || !dialog.open || !this._elements.rootInput) {
+        this.setStatus('error', 'Folder picker unavailable.');
+        return;
+      }
+      try {
+        const result = await dialog.open({ directory: true, multiple: false });
+        if (typeof result === 'string') {
+          this._elements.rootInput.value = result;
+          await this._saveRoot();
+        }
+      } catch (_) {
+        this.setStatus('error', 'Folder picker failed.');
       }
     }
 
