@@ -312,6 +312,233 @@
 					},
 
 					{
+						name: 'Export Video (Black Screen MP4)',
+						action: function () {
+							var tauri = window.__TAURI__;
+							var invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
+							var isExporting = false;
+							var traceState = {
+								workerCreated: false,
+								workerUrl: '',
+								fetchOk: null,
+								fetchStatus: null,
+								inlineBlob: null,
+								messageCount: 0
+							};
+
+							var modal = new PKSimpleModal({
+								title: 'Export Video (Black Screen MP4)',
+								clss: 'pk_modal_anim',
+								buttons: [
+									{
+										title: 'Export',
+										clss: 'pk_modal_a_accpt',
+										callback: function () {
+											if (isExporting) return;
+											startExport();
+										}
+									},
+									{
+										title: 'Close',
+										clss: 'pk_modal_a',
+										callback: function () {
+											modal.Destroy();
+										}
+									}
+								],
+								body: '<div class="pk_row" style="margin-bottom:6px">' +
+									'<span id="aw_video_export_spinner" style="display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle">' +
+									'<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">' +
+									'<circle cx="6" cy="6" r="5" stroke="rgba(255,255,255,0.35)" stroke-width="2" fill="none"></circle>' +
+									'<circle cx="6" cy="6" r="5" stroke="#ffffff" stroke-width="2" fill="none" stroke-dasharray="16" stroke-dashoffset="12">' +
+									'<animateTransform attributeName="transform" type="rotate" from="0 6 6" to="360 6 6" dur="0.8s" repeatCount="indefinite"></animateTransform>' +
+									'</circle>' +
+									'</svg></span>' +
+									'<span id="aw_video_export_status">Exporting...</span></div>' +
+									'<div class="pk_row" style="margin-bottom:6px;display:flex;align-items:center">' +
+									'<div style="flex:1;min-width:0">' +
+									'<input id="aw_video_export_root" class="pk_txt" type="text" style="width:100%;box-sizing:border-box" placeholder="Save folder (optional)" />' +
+									'</div>' +
+									'<button id="aw_video_export_browse" class="pk_modal_a" style="margin-left:6px;white-space:nowrap;min-height:26px;line-height:26px;padding:0 12px" type="button">Browse</button>' +
+									'</div>'
+							});
+
+							modal.Show();
+							var statusEl = modal.el_body.querySelector('#aw_video_export_status');
+							var spinnerEl = modal.el_body.querySelector('#aw_video_export_spinner');
+							var exportRootInput = modal.el_body.querySelector('#aw_video_export_root');
+							var exportBrowseBtn = modal.el_body.querySelector('#aw_video_export_browse');
+							var exportBtn = modal.el && modal.el.querySelector('a.pk_modal_a_accpt');
+
+							function setStatus(state, text) {
+								if (spinnerEl) spinnerEl.style.display = state === 'downloading' ? 'inline-block' : 'none';
+								if (statusEl) statusEl.textContent = text || '';
+							}
+
+							function trace(stage, details) {
+								if (!invoke) return;
+								var payload = {
+									ts: new Date().toISOString(),
+									stage: stage
+								};
+								if (details && typeof details === 'object') {
+									for (var key in details) payload[key] = details[key];
+								}
+
+								if (stage === 'wav_worker_create') {
+									traceState.workerCreated = true;
+									traceState.workerUrl = details && details.workerUrl ? details.workerUrl : traceState.workerUrl;
+									if (details && details.inlineBlob !== undefined) traceState.inlineBlob = details.inlineBlob;
+								} else if (stage === 'wav_worker_fetch_test') {
+									traceState.fetchOk = details && details.ok;
+									traceState.fetchStatus = details && details.status;
+								} else if (stage === 'wav_worker_message') {
+									traceState.messageCount += 1;
+								}
+
+								invoke('append_video_trace', { sessionId: logStamp, line: JSON.stringify(payload) }).catch(function () {});
+							}
+
+							if (invoke && exportRootInput) {
+								invoke('get_export_root').then(function (root) {
+									exportRootInput.value = root || '';
+								}).catch(function () {});
+							}
+
+							if (exportBrowseBtn) {
+								exportBrowseBtn.addEventListener('click', function () {
+									var dialog = tauri && (tauri.dialog || (tauri.plugin && tauri.plugin.dialog));
+									if (!dialog || !dialog.open) {
+										trace('export_failure', { message: 'Dialog unavailable' });
+										setStatus('error', 'Folder picker unavailable.');
+										return;
+									}
+									dialog.open({ directory: true, multiple: false }).then(function (result) {
+										if (typeof result === 'string' && exportRootInput) {
+											exportRootInput.value = result;
+										}
+									}).catch(function (err) {
+										trace('export_failure', { message: String(err || '') });
+										setStatus('error', 'Folder picker failed.');
+									});
+								});
+							}
+
+							function formatDateFolder() {
+								var now = new Date();
+								var yyyy = String(now.getFullYear());
+								var mm = String(now.getMonth() + 1).padStart(2, '0');
+								var dd = String(now.getDate()).padStart(2, '0');
+								return yyyy + '-' + mm + '-' + dd;
+							}
+
+							function formatLogStamp() {
+								var now = new Date();
+								var yyyy = String(now.getFullYear());
+								var mm = String(now.getMonth() + 1).padStart(2, '0');
+								var dd = String(now.getDate()).padStart(2, '0');
+								var hh = String(now.getHours()).padStart(2, '0');
+								var mi = String(now.getMinutes()).padStart(2, '0');
+								var ss = String(now.getSeconds()).padStart(2, '0');
+								return yyyy + mm + dd + '_' + hh + mi + ss;
+							}
+
+							var logStamp = formatLogStamp();
+							var exportTimeout = null;
+
+							async function writeVideoLog(message) {
+								if (!invoke) return;
+								try {
+									await invoke('write_video_log', { logStamp: logStamp, contents: String(message || '') });
+								} catch (_) {}
+							}
+
+							async function runExport(blob) {
+								if (!invoke) {
+									setStatus('error', 'Export failed. See logs.');
+									trace('export_failure', { message: 'Tauri invoke unavailable' });
+									return;
+								}
+								try {
+									trace('backend_invoke_export_video');
+									var dateFolder = formatDateFolder();
+									var tempPath = await invoke('prepare_temp_audio', { dateFolder: dateFolder, logStamp: logStamp });
+									trace('backend_export_video_start', { input: tempPath });
+									var arrayBuffer = await blob.arrayBuffer();
+									var bytes = new Uint8Array(arrayBuffer);
+									await invoke('write_binary_file', { path: tempPath, bytes: bytes });
+									setStatus('downloading', 'Encoding MP4...');
+									var outputRoot = exportRootInput ? exportRootInput.value.trim() : '';
+									var outputPath = await invoke('export_black_video', { inputAudioPath: tempPath, sessionId: logStamp, outputRoot: outputRoot || null });
+									trace('export_success', { output: outputPath });
+									setStatus('success', 'Exported: ' + outputPath);
+								} catch (err) {
+									trace('export_failure', { message: err && err.toString ? err.toString() : String(err || 'Export failed') });
+									setStatus('error', 'Export failed. See logs.');
+								}
+								isExporting = false;
+								if (exportBtn) exportBtn.classList.remove('pk_inact');
+							}
+
+							function startExport() {
+								trace('export_clicked');
+								if (isExporting) return;
+								isExporting = true;
+								if (exportBtn) exportBtn.classList.add('pk_inact');
+								setStatus('downloading', 'Preparing audio...');
+
+								trace('precheck_start');
+								var wv = app.engine && app.engine.wavesurfer;
+								var buffer = wv && wv.backend ? wv.backend.buffer : null;
+								var duration = wv && wv.getDuration ? wv.getDuration() : 0;
+								var length = buffer && buffer.length ? buffer.length : 0;
+								var hasAudio = !!(buffer && length > 0 && duration > 0);
+								trace('precheck_audio_loaded_result', { hasAudio: hasAudio, duration: duration, length: length });
+								if (!hasAudio) {
+									trace('export_failure', { message: 'No audio loaded' });
+									setStatus('error', 'No audio loaded. Import or record audio first.');
+									isExporting = false;
+									if (exportBtn) exportBtn.classList.remove('pk_inact');
+									return;
+								}
+
+								app.engine.ExportWavBlob(false, true, function (result) {
+									if (result && result.blob) {
+										if (exportTimeout) {
+											clearTimeout(exportTimeout);
+											exportTimeout = null;
+										}
+										trace('wav_blob_ready', { size: result.blob.size, type: result.blob.type });
+										setStatus('downloading', 'Rendering WAV...');
+										runExport(result.blob);
+									} else if (result && result.error) {
+										trace('export_failure', { message: result.error });
+										setStatus('error', 'Export failed. See logs.');
+										isExporting = false;
+										if (exportBtn) exportBtn.classList.remove('pk_inact');
+									}
+								}, trace);
+
+								exportTimeout = setTimeout(function() {
+									trace('wav_blob_timeout', {
+										workerCreated: traceState.workerCreated,
+										workerUrl: traceState.workerUrl,
+										fetchOk: traceState.fetchOk,
+										fetchStatus: traceState.fetchStatus,
+										inlineBlob: traceState.inlineBlob,
+										messageCount: traceState.messageCount
+									});
+									setStatus('error', 'Export failed. See logs.');
+									isExporting = false;
+									if (exportBtn) exportBtn.classList.remove('pk_inact');
+								}, 30000);
+							}
+
+							setStatus('idle', 'Choose a save folder and click Export.');
+						}
+					},
+
+					{
 						name: 'Load from Computer',
 						type: 'file',
 						action: function ( e ) {

@@ -251,6 +251,10 @@
 				});
 			}, 220);
 		}
+		this.ExportWavBlob = function ( selection, stereo, callback, trace ) {
+			if (!q.is_ready) return ;
+			AudioUtils.ExportWavBlob ( selection, stereo, callback, trace );
+		}
 		this.LoadSample = function () {
 
 			app.fireEvent ('WillDownloadFile');

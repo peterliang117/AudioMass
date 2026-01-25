@@ -927,6 +927,151 @@
 				callback && callback ('done');
 			}
 		}
+
+		function ExportWavBlob( selection, stereo, callback, trace ) {
+			if (wavesurfer && wavesurfer.backend && wavesurfer.backend.buffer){}
+			else {
+				return false;
+			}
+
+			function logTrace ( stage, details ) {
+				if (!trace) return;
+				try { trace ( stage, details || {} ); } catch (_) {}
+			}
+
+			var workerCreated = false;
+			var workerUrl = '';
+			try {
+				workerUrl = new URL('wav.js', window.location.href).toString();
+			} catch (e) {
+				workerUrl = 'wav.js';
+			}
+			logTrace('wav_worker_create', { workerUrl: workerUrl });
+
+			function initWorker ( url, inlineBlob ) {
+				workerCreated = true;
+				logTrace('wav_worker_create', { workerUrl: url, inlineBlob: inlineBlob });
+				worker = new Worker(url);
+
+				worker.onerror = function ( e ) {
+					logTrace('wav_worker_error', { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno });
+					callback && callback ({ error: 'worker_error' });
+				};
+
+				worker.onmessageerror = function ( e ) {
+					logTrace('wav_worker_message_error', { message: e.message || String(e) });
+					callback && callback ({ error: 'worker_message_error' });
+				};
+
+				worker.onmessage = function( ev ) {
+					var keys = [];
+					try { keys = Object.keys(ev.data || {}); } catch (_) {}
+					logTrace('wav_worker_message', { keys: keys, percentage: ev.data && ev.data.percentage });
+					if (ev.data && ev.data.percentage)
+					{
+						callback && callback ({ progress: ev.data.percentage });
+						return ;
+					}
+
+					logTrace('wav_blob_ready', { size: ev.data && ev.data.size, type: ev.data && ev.data.type });
+					callback && callback ({ blob: ev.data, workerCreated: workerCreated, workerUrl: workerUrl });
+
+					worker.terminate ();
+					worker = null;
+				};
+
+				worker.postMessage ({
+					sample_rate: sample_rate,
+					kbps: 128,
+					flac_compression: 5,
+					channels: channels
+				});
+				worker.postMessage ( dataAsInt16ArrayLeft.buffer, [dataAsInt16ArrayLeft.buffer] );
+				if (data_right)
+					worker.postMessage ( dataAsInt16ArrayRight.buffer, [dataAsInt16ArrayRight.buffer] );
+				else
+					worker.postMessage (null);
+			}
+
+			fetch(workerUrl).then(function (res) {
+				logTrace('wav_worker_fetch_test', { ok: res.ok, status: res.status });
+				if (!res.ok) throw new Error('fetch failed');
+				return res.text();
+			}).then(function (src) {
+				var blobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+				logTrace('wav_worker_inline_blob', { enabled: true });
+				initWorker(blobUrl, true);
+			}).catch(function (err) {
+				logTrace('wav_worker_fetch_test', { ok: false, error: String(err || '') });
+				initWorker(workerUrl, false);
+			});
+
+			var originalBuffer = wavesurfer.backend.buffer;
+			var sample_rate = originalBuffer.sampleRate;
+			var channels = originalBuffer.numberOfChannels;
+
+			var data_left = originalBuffer.getChannelData ( 0 );
+			var data_right = null;
+			if (channels === 2)
+				data_right = originalBuffer.getChannelData ( 1 );
+
+			if (!stereo && channels === 2)
+			{
+				if (!wavesurfer.ActiveChannels[0] && wavesurfer.ActiveChannels[1])
+				{
+					data_left  = originalBuffer.getChannelData ( 1 );
+					data_right = null;
+					channels   = 1;
+				}
+			}
+
+			if (stereo && !data_right)
+			{
+				data_right = data_left;
+				channels   = 2;
+			}
+			else if (!stereo && data_right)
+			{
+				data_right = null;
+				channels   = 1;
+			}
+
+			var len = data_left.length, i = 0;
+			var offset = 0;
+
+			if (selection)
+			{
+				offset = (selection[0] * sample_rate) >> 0;
+				len = ((selection[1] * sample_rate) >> 0) - offset;
+			}
+
+			var dataAsInt16ArrayLeft = new Int16Array(len);
+			var dataAsInt16ArrayRight = null;
+
+			if (data_right)
+			{
+				dataAsInt16ArrayRight = new Int16Array(len);
+
+				while(i < len) {
+					dataAsInt16ArrayLeft[i] = convert(data_left[offset + i]);
+				 	dataAsInt16ArrayRight[i] = convert(data_right[offset + i]);
+				 	++i;
+				}
+			}
+			else
+			{
+				while(i < len) {
+					dataAsInt16ArrayLeft[i] = convert(data_left[offset + i]);
+				 	++i;
+				}
+			}
+			function convert ( n ) {
+				 var v = n < 0 ? n * 32768 : n * 32767;
+				 return Math.max(-32768, Math.min(32768, v));
+			}
+
+			logTrace('wav_export_start', { sampleRate: sample_rate, channels: channels, length: len });
+		}
 		
 		function updatePreview ( val ) {
 			if (!this.previewing) return ;
@@ -1779,6 +1924,7 @@
 		this.MakeSilence = MakeSilenceBuffer;
 		this.DownloadFile = DownloadFile;
 		this.DownloadFileCancel = DownloadFileCancel;
+		this.ExportWavBlob = ExportWavBlob;
 		// this.ComputeTopFrequencies = findTopFrequencies;
 		// this.MatchTopFrequencies= killdTopFrequencies;
 		// ---
