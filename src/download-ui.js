@@ -28,10 +28,12 @@
         openBtn: this._shadow.getElementById('open-btn'),
         minimizeBtn: this._shadow.getElementById('minimize-btn'),
         downloadBtn: this._shadow.getElementById('download-btn'),
+        stopBtn: this._shadow.getElementById('stop-btn'),
         urlInput: this._shadow.getElementById('url-input'),
         rootInput: this._shadow.getElementById('root-input'),
         rootSave: this._shadow.getElementById('root-save'),
         rootBrowse: this._shadow.getElementById('root-browse'),
+        playlistToggle: this._shadow.getElementById('playlist-toggle'),
         statusText: this._shadow.getElementById('status-text'),
         spinner: this._shadow.getElementById('spinner')
       };
@@ -171,6 +173,17 @@
   button.action:hover {
     background: #3a3a3a;
   }
+  label.toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  label.toggle input {
+    flex: 0 0 auto;
+    width: auto;
+  }
   #status {
     margin-top: 8px;
     display: flex;
@@ -222,6 +235,13 @@
     <div class="row">
       <input id="url-input" type="url" placeholder="Paste YouTube URL..." autocomplete="off" spellcheck="false" />
       <button id="download-btn" class="action" type="button">Download</button>
+      <button id="stop-btn" class="action" type="button">Stop</button>
+    </div>
+    <div class="row">
+      <label class="toggle">
+        <input id="playlist-toggle" type="checkbox" />
+        Download playlist
+      </label>
     </div>
     <div class="row">
       <input id="root-input" type="text" placeholder="Download/Export folder path" autocomplete="off" spellcheck="false" />
@@ -256,6 +276,19 @@
       if (downloadBtn) {
         downloadBtn.addEventListener('click', () => this._download());
       }
+      if (this._elements.stopBtn) {
+        this._elements.stopBtn.addEventListener('click', () => this._stopDownload());
+      }
+      if (this._elements.playlistToggle) {
+        this._elements.playlistToggle.addEventListener('change', () => {
+          if (window.localStorage) {
+            window.localStorage.setItem(
+              'aw_download_playlist',
+              this._elements.playlistToggle.checked ? '1' : '0'
+            );
+          }
+        });
+      }
       if (rootSave) {
         rootSave.addEventListener('click', () => this._saveRoot());
       }
@@ -288,6 +321,10 @@
       try {
         const root = await invoke('get_download_root');
         if (this._elements.rootInput) this._elements.rootInput.value = root;
+        if (this._elements.playlistToggle && window.localStorage) {
+          this._elements.playlistToggle.checked = window.localStorage.getItem('aw_download_playlist') === '1';
+        }
+        if (this._elements.stopBtn) this._elements.stopBtn.disabled = true;
       } catch (_) {
         this.setStatus('error', 'Download failed. See logs.');
       }
@@ -367,6 +404,7 @@
       if (this._isDownloading) return;
       this._isDownloading = true;
       if (this._elements.downloadBtn) this._elements.downloadBtn.disabled = true;
+      if (this._elements.stopBtn) this._elements.stopBtn.disabled = false;
       this.setStatus('downloading');
 
       const dateFolder = this._formatDateFolder();
@@ -378,12 +416,16 @@
       let downloadPath = '';
       let binariesDir = '';
       let chosenYtDlpPath = '';
+      let cancelRequested = false;
       const suppressWarnings = window.localStorage
         && window.localStorage.getItem('aw_ytdlp_no_warnings') === '1';
+      const allowPlaylist = window.localStorage
+        && window.localStorage.getItem('aw_download_playlist') === '1';
 
       try {
-        downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
-        logPath = `${downloadDir}\\download_${logStamp}.log`;
+        const prep = await invoke('prepare_download', { dateFolder, logStamp });
+        downloadDir = prep && prep.download_dir ? prep.download_dir : '';
+        logPath = prep && prep.log_path ? prep.log_path : '';
 
         binariesDir = await invoke('get_binaries_dir');
         logLines.push(`[diag] binariesDir=${binariesDir}`);
@@ -402,6 +444,11 @@
         ];
         if (suppressWarnings) {
           args.splice(1, 0, '--no-warnings');
+        }
+        if (!allowPlaylist) {
+          args.splice(1, 0, '--no-playlist');
+        } else {
+          args.splice(1, 0, '--yes-playlist');
         }
 
         let command = null;
@@ -429,8 +476,11 @@
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
           logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
+          if (cancelRequested) {
+            logLines.push('[diag] cancel_complete=true');
+          }
           let resolvedPath = downloadPath;
-          if (code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
+          if (!cancelRequested && code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
             try {
               resolvedPath = await invoke('find_latest_download', { downloadDir });
               logLines.push(`[diag] resolved_download=${resolvedPath}`);
@@ -449,7 +499,7 @@
 
           const isM4a = resolvedPath && resolvedPath.toLowerCase().endsWith('.m4a');
 
-          if (code === 0 && isM4a) {
+          if (!cancelRequested && code === 0 && isM4a) {
             try {
               // Persist the resolved download path for user visibility/support.
               if (resolvedPath) {
@@ -478,14 +528,31 @@
               this.setStatus('error');
             }
           } else {
-            this.setStatus('error');
+            this.setStatus('error', cancelRequested ? 'Download stopped.' : undefined);
           }
 
           this._isDownloading = false;
           if (this._elements.downloadBtn) this._elements.downloadBtn.disabled = false;
+          if (this._elements.stopBtn) this._elements.stopBtn.disabled = true;
+          this._currentChild = null;
+          this._cancelDownload = null;
         });
 
-        await command.spawn();
+        this._cancelDownload = async () => {
+          if (!this._isDownloading) return;
+          cancelRequested = true;
+          logLines.push('[diag] cancel_requested=true');
+          if (this._currentChild && this._currentChild.kill) {
+            try {
+              await this._currentChild.kill();
+            } catch (err) {
+              logLines.push(`[diag] cancel_kill_error=${String(err || '')}`);
+            }
+          }
+          this.setStatus('error', 'Download stopped.');
+        };
+
+        this._currentChild = await command.spawn();
         logLines.push(`[diag] spawn_called path=${chosenYtDlpPath}`);
       } catch (error) {
         if (logPath) {
@@ -498,6 +565,15 @@
         this.setStatus('error');
         this._isDownloading = false;
         if (this._elements.downloadBtn) this._elements.downloadBtn.disabled = false;
+        if (this._elements.stopBtn) this._elements.stopBtn.disabled = true;
+        this._currentChild = null;
+        this._cancelDownload = null;
+      }
+    }
+
+    async _stopDownload() {
+      if (this._cancelDownload) {
+        await this._cancelDownload();
       }
     }
   }

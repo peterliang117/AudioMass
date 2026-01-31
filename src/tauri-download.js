@@ -13,6 +13,7 @@
   const statusText = document.getElementById('tauri-download-status-text');
   const rootInput = document.getElementById('tauri-download-root');
   const rootSave = document.getElementById('tauri-download-root-save');
+  const stopBtn = document.getElementById('tauri-download-stop');
 
   const tauri = window.__TAURI__;
   const invoke = tauri && ((tauri.core && tauri.core.invoke) || tauri.invoke);
@@ -119,6 +120,9 @@
   }
 
   let isDownloading = false;
+  let currentChild = null;
+  let cancelRequested = false;
+  let cancelHandler = null;
 
   if (button) {
     button.addEventListener('click', async () => {
@@ -136,6 +140,7 @@
 
       isDownloading = true;
       button.disabled = true;
+      if (stopBtn) stopBtn.disabled = false;
       setStatus('downloading');
 
       const dateFolder = formatDateFolder();
@@ -149,10 +154,13 @@
       let chosenYtDlpPath = '';
       const suppressWarnings = window.localStorage
         && window.localStorage.getItem('aw_ytdlp_no_warnings') === '1';
+      const allowPlaylist = window.localStorage
+        && window.localStorage.getItem('aw_download_playlist') === '1';
 
       try {
-        downloadDir = await invoke('ensure_downloads_dir', { dateFolder });
-        logPath = `${downloadDir}\\download_${logStamp}.log`;
+        const prep = await invoke('prepare_download', { dateFolder, logStamp });
+        downloadDir = prep && prep.download_dir ? prep.download_dir : '';
+        logPath = prep && prep.log_path ? prep.log_path : '';
 
         binariesDir = await invoke('get_binaries_dir');
         logLines.push(`[diag] binariesDir=${binariesDir}`);
@@ -171,6 +179,11 @@
         ];
         if (suppressWarnings) {
           args.splice(1, 0, '--no-warnings');
+        }
+        if (!allowPlaylist) {
+          args.splice(1, 0, '--no-playlist');
+        } else {
+          args.splice(1, 0, '--yes-playlist');
         }
 
         logLines.push('[diag] using Command.sidecar name=binaries/yt-dlp');
@@ -197,8 +210,11 @@
         command.on('close', async (event) => {
           const code = event && typeof event.code === 'number' ? event.code : 1;
           logLines.push(`[diag] command.on_close code=${code} path=${chosenYtDlpPath}`);
+          if (cancelRequested) {
+            logLines.push('[diag] cancel_complete=true');
+          }
           let resolvedPath = downloadPath;
-          if (code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
+          if (!cancelRequested && code === 0 && (!resolvedPath || !resolvedPath.toLowerCase().endsWith('.m4a'))) {
             try {
               resolvedPath = await invoke('find_latest_download', { downloadDir });
               logLines.push(`[diag] resolved_download=${resolvedPath}`);
@@ -217,7 +233,7 @@
 
           const isM4a = resolvedPath && resolvedPath.toLowerCase().endsWith('.m4a');
 
-          if (code === 0 && isM4a) {
+          if (!cancelRequested && code === 0 && isM4a) {
             try {
               const bytes = await invoke('read_downloaded_file', { path: resolvedPath });
               const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' });
@@ -231,14 +247,33 @@
               setStatus('error');
             }
           } else {
-            setStatus('error');
+            setStatus('error', cancelRequested ? 'Download stopped.' : undefined);
           }
 
           isDownloading = false;
           button.disabled = false;
+          if (stopBtn) stopBtn.disabled = true;
+          currentChild = null;
+          cancelRequested = false;
+          cancelHandler = null;
         });
 
-        await command.spawn();
+        cancelRequested = false;
+        cancelHandler = async () => {
+          if (!isDownloading) return;
+          cancelRequested = true;
+          logLines.push('[diag] cancel_requested=true');
+          if (currentChild && currentChild.kill) {
+            try {
+              await currentChild.kill();
+            } catch (err) {
+              logLines.push(`[diag] cancel_kill_error=${String(err || '')}`);
+            }
+          }
+          setStatus('error', 'Download stopped.');
+        };
+
+        currentChild = await command.spawn();
         logLines.push(`[diag] spawn_called path=${chosenYtDlpPath}`);
       } catch (error) {
         if (logPath) {
@@ -251,6 +286,19 @@
         setStatus('error');
         isDownloading = false;
         button.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+        currentChild = null;
+        cancelRequested = false;
+        cancelHandler = null;
+      }
+    });
+  }
+
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.addEventListener('click', async () => {
+      if (cancelHandler) {
+        await cancelHandler();
       }
     });
   }
