@@ -165,8 +165,15 @@
         binariesDir = await invoke('get_binaries_dir');
         logLines.push(`[diag] binariesDir=${binariesDir}`);
         const outputTemplate = `${downloadDir}\\%(uploader)s__%(title)s__%(id)s.%(ext)s`;
+        const jsRuntime = window.localStorage
+          && window.localStorage.getItem('aw_ytdlp_js_runtime');
+        const jsRuntimeValue = jsRuntime && jsRuntime.trim() ? jsRuntime.trim() : 'node';
         const args = [
           '--ignore-config',
+          '--js-runtimes', jsRuntimeValue,
+          '--no-progress',
+          '--newline',
+          '--encoding', 'utf-8',
           '--ffmpeg-location', binariesDir,
           '-f', 'bestaudio',
           '-x',
@@ -190,16 +197,29 @@
         const command = Command.sidecar('binaries/yt-dlp', args);
         chosenYtDlpPath = 'sidecar:binaries/yt-dlp';
 
+        const safeToString = (chunk, label) => {
+          try {
+            return chunk.toString();
+          } catch (err) {
+            logLines.push(`[diag] ${label}_decode_error=${String(err || '')}`);
+            return String(chunk || '');
+          }
+        };
+
         command.stdout.on('data', (line) => {
-          if (line) logLines.push(line.toString());
-          const trimmed = (line || '').toString().trim();
+          const text = safeToString(line, 'stdout');
+          if (text) logLines.push(text);
+          const trimmed = (text || '').trim();
           if (trimmed && downloadDir && trimmed.toLowerCase().startsWith(downloadDir.toLowerCase())) {
             downloadPath = trimmed;
           }
         });
 
         command.stderr.on('data', (line) => {
-          if (line) logLines.push(line.toString());
+          const text = safeToString(line, 'stderr');
+          if (text) {
+            logLines.push(text);
+          }
         });
 
         command.on('error', (error) => {
@@ -232,10 +252,16 @@
           }
 
           const isM4a = resolvedPath && resolvedPath.toLowerCase().endsWith('.m4a');
+          const lowerLog = logText.toLowerCase();
+          const is403 = lowerLog.includes('http error 403')
+            || lowerLog.includes('unable to download video data');
 
           if (!cancelRequested && code === 0 && isM4a) {
             try {
               const bytes = await invoke('read_downloaded_file', { path: resolvedPath });
+              if (!bytes || !bytes.length) {
+                throw new Error('Downloaded file is empty');
+              }
               const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/mp4' });
               if (window.PKAudioEditor && window.PKAudioEditor.engine) {
                 window.PKAudioEditor.engine.LoadArrayBuffer(blob);
@@ -244,10 +270,21 @@
               const sizeText = sizeMb ? ` (${sizeMb.toFixed(1)} MB)` : '';
               setStatus('success', `Ready: File imported.${sizeText}`);
             } catch (_) {
-              setStatus('error');
+              setStatus('error', 'Download finished but file could not be loaded.');
             }
           } else {
-            setStatus('error', cancelRequested ? 'Download stopped.' : undefined);
+            if (cancelRequested) {
+              setStatus('error', 'Download stopped.');
+            } else if (is403) {
+              setStatus(
+                'error',
+                'YouTube blocked the download (HTTP 403). Update yt-dlp, try a different network, or disable VPN.'
+              );
+            } else if (code === 0) {
+              setStatus('error', 'Download finished but output file is missing.');
+            } else {
+              setStatus('error');
+            }
           }
 
           isDownloading = false;
